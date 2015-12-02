@@ -393,14 +393,16 @@ static NSString* toBase64(NSData* data) {
 
 - (NSString*)tempFilePath:(NSString*)extension
 {
-    NSString* docsPath = [NSTemporaryDirectory()stringByStandardizingPath];
+    // NSString* docsPath = [NSTemporaryDirectory()stringByStandardizingPath];
+    // Use Cache directory instead of temp directory to avoid removing the files when user closes the app
+    NSString* cachePath = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES)[0];
     NSFileManager* fileMgr = [[NSFileManager alloc] init]; // recommended by Apple (vs [NSFileManager defaultManager]) to be threadsafe
     NSString* filePath;
 
     // generate unique file name
     int i = 1;
     do {
-        filePath = [NSString stringWithFormat:@"%@/%@%03d.%@", docsPath, CDV_PHOTO_PREFIX, i++, extension];
+        filePath = [NSString stringWithFormat:@"%@/%@%03d.%@", cachePath, CDV_PHOTO_PREFIX, i++, extension];
     } while ([fileMgr fileExistsAtPath:filePath]);
 
     return filePath;
