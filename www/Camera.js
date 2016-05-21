@@ -89,20 +89,37 @@ for (var key in Camera) {
  *
  * If `Camera.sourceType` is `Camera.PictureSourceType.PHOTOLIBRARY` or
  * `Camera.PictureSourceType.SAVEDPHOTOALBUM`, then a dialog displays
+<<<<<<< HEAD
  * that allows users to select an existing image.
+=======
+ * that allows users to select an existing image.  The
+ * `camera.getPicture` function returns a [`CameraPopoverHandle`]{@link module:CameraPopoverHandle} object,
+ * which can be used to reposition the image selection dialog, for
+ * example, when the device orientation changes.
+>>>>>>> 601289e... Add option to show 'library' button while capturing a photo
  *
  * The return value is sent to the [`cameraSuccess`]{@link module:camera.onSuccess} callback function, in
  * one of the following formats, depending on the specified
  * `cameraOptions`:
  *
  * - A `String` containing the Base64-encoded photo image.
+<<<<<<< HEAD
+=======
+ *
+>>>>>>> 601289e... Add option to show 'library' button while capturing a photo
  * - A `String` representing the image file location on local storage (default).
  *
  * You can do whatever you want with the encoded image or URI, for
  * example:
  *
  * - Render the image in an `<img>` tag, as in the example below
+<<<<<<< HEAD
  * - Save the data locally (`LocalStorage`, [Lawnchair](http://brianleroux.github.com/lawnchair/), etc.)
+=======
+ *
+ * - Save the data locally (`LocalStorage`, [Lawnchair](http://brianleroux.github.com/lawnchair/), etc.)
+ *
+>>>>>>> 601289e... Add option to show 'library' button while capturing a photo
  * - Post the data to a remote server
  *
  * __NOTE__: Photo resolution on newer devices is quite good. Photos
@@ -149,8 +166,10 @@ cameraExport.getPicture = function(successCallback, errorCallback, options) {
     var popoverOptions = getValue(options.popoverOptions, null);
     var cameraDirection = getValue(options.cameraDirection, Camera.Direction.BACK);
 
+    var showLibraryButton = !!options.showLibraryButton;
+
     var args = [quality, destinationType, sourceType, targetWidth, targetHeight, encodingType,
-                mediaType, allowEdit, correctOrientation, saveToPhotoAlbum, popoverOptions, cameraDirection];
+                mediaType, allowEdit, correctOrientation, saveToPhotoAlbum, popoverOptions, cameraDirection, showLibraryButton];
 
     exec(successCallback, errorCallback, "Camera", "takePicture", args);
     // XXX: commented out
