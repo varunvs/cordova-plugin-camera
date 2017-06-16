@@ -85,8 +85,6 @@ static NSString* toBase64(NSData* data) {
     pictureOptions.popoverSupported = NO;
     pictureOptions.usesGeolocation = NO;
 
-    // Only if source is Camera && opt set
-    pictureOptions.showLibraryButton = (pictureOptions.sourceType == UIImagePickerControllerSourceTypeCamera) && [[command argumentAtIndex:12 withDefault:@(NO)] boolValue];
     return pictureOptions;
 }
 
@@ -159,11 +157,29 @@ static NSString* toBase64(NSData* data) {
             return;
         }
 
-        // If a popover is already open, close it; we only want one at a time.
-        if (([[weakSelf pickerController] pickerPopoverController] != nil) && [[[weakSelf pickerController] pickerPopoverController] isPopoverVisible]) {
-            [[[weakSelf pickerController] pickerPopoverController] dismissPopoverAnimated:YES];
-            [[[weakSelf pickerController] pickerPopoverController] setDelegate:nil];
-            [[weakSelf pickerController] setPickerPopoverController:nil];
+        // Validate the app has permission to access the camera
+        if (pictureOptions.sourceType == UIImagePickerControllerSourceTypeCamera && [AVCaptureDevice respondsToSelector:@selector(authorizationStatusForMediaType:)]) {
+            AVAuthorizationStatus authStatus = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+            if (authStatus == AVAuthorizationStatusDenied ||
+                authStatus == AVAuthorizationStatusRestricted) {
+                // If iOS 8+, offer a link to the Settings app
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-pointer-compare"
+                NSString* settingsButton = (&UIApplicationOpenSettingsURLString != NULL)
+                    ? NSLocalizedString(@"Settings", nil)
+                    : nil;
+#pragma clang diagnostic pop
+
+                // Denied; show an alert
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[[UIAlertView alloc] initWithTitle:[[NSBundle mainBundle]
+                                                         objectForInfoDictionaryKey:@"CFBundleDisplayName"]
+                                                message:NSLocalizedString(@"Access to the camera has been prohibited; please enable it in the Settings app to continue.", nil)
+                                               delegate:weakSelf
+                                      cancelButtonTitle:NSLocalizedString(@"OK", nil)
+                                      otherButtonTitles:settingsButton, nil] show];
+                });
+            }
         }
 
         CDVCameraPicker* cameraPicker = [CDVCameraPicker createFromPictureOptions:pictureOptions];
@@ -174,20 +190,27 @@ static NSString* toBase64(NSData* data) {
         // we need to capture this state for memory warnings that dealloc this object
         cameraPicker.webView = weakSelf.webView;
 
-        if ([weakSelf popoverSupported] && (pictureOptions.sourceType != UIImagePickerControllerSourceTypeCamera)) {
-            if (cameraPicker.pickerPopoverController == nil) {
-                cameraPicker.pickerPopoverController = [[NSClassFromString(@"UIPopoverController") alloc] initWithContentViewController:cameraPicker];
+        // Perform UI operations on the main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // If a popover is already open, close it; we only want one at a time.
+            if (([[weakSelf pickerController] pickerPopoverController] != nil) && [[[weakSelf pickerController] pickerPopoverController] isPopoverVisible]) {
+                [[[weakSelf pickerController] pickerPopoverController] dismissPopoverAnimated:YES];
+                [[[weakSelf pickerController] pickerPopoverController] setDelegate:nil];
+                [[weakSelf pickerController] setPickerPopoverController:nil];
             }
-            [weakSelf displayPopover:pictureOptions.popoverOptions];
-            weakSelf.hasPendingOperation = NO;
 
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
+            if ([weakSelf popoverSupported] && (pictureOptions.sourceType != UIImagePickerControllerSourceTypeCamera)) {
+                if (cameraPicker.pickerPopoverController == nil) {
+                    cameraPicker.pickerPopoverController = [[NSClassFromString(@"UIPopoverController") alloc] initWithContentViewController:cameraPicker];
+                }
+                [weakSelf displayPopover:pictureOptions.popoverOptions];
+                weakSelf.hasPendingOperation = NO;
+            } else {
                 [weakSelf.viewController presentViewController:cameraPicker animated:YES completion:^{
                     weakSelf.hasPendingOperation = NO;
                 }];
-            });
-        }
+            }
+        });
     }];
 }
 
@@ -339,21 +362,18 @@ static NSString* toBase64(NSData* data) {
                 // use image unedited as requested , don't resize
                 data = UIImageJPEGRepresentation(image, 1.0);
             } else {
-                if (options.usesGeolocation) {
-                    NSDictionary* controllerMetadata = [info objectForKey:@"UIImagePickerControllerMediaMetadata"];
-                    if (controllerMetadata) {
-                        self.data = data;
-                        self.metadata = [[NSMutableDictionary alloc] init];
+                data = UIImageJPEGRepresentation(image, [options.quality floatValue] / 100.0f);
+            }
 
-                        NSMutableDictionary* EXIFDictionary = [[controllerMetadata objectForKey:(NSString*)kCGImagePropertyExifDictionary]mutableCopy];
-                        if (EXIFDictionary) {
-                            [self.metadata setObject:EXIFDictionary forKey:(NSString*)kCGImagePropertyExifDictionary];
-                        }
+            if (options.usesGeolocation) {
+                NSDictionary* controllerMetadata = [info objectForKey:@"UIImagePickerControllerMediaMetadata"];
+                if (controllerMetadata) {
+                    self.data = data;
+                    self.metadata = [[NSMutableDictionary alloc] init];
 
-                        if (IsAtLeastiOSVersion(@"8.0")) {
-                            [[self locationManager] performSelector:NSSelectorFromString(@"requestWhenInUseAuthorization") withObject:nil afterDelay:0];
-                        }
-                        [[self locationManager] startUpdatingLocation];
+                    NSMutableDictionary* EXIFDictionary = [[controllerMetadata objectForKey:(NSString*)kCGImagePropertyExifDictionary]mutableCopy];
+                    if (EXIFDictionary)	{
+                        [self.metadata setObject:EXIFDictionary forKey:(NSString*)kCGImagePropertyExifDictionary];
                     }
 
                     if (IsAtLeastiOSVersion(@"8.0")) {
@@ -416,7 +436,7 @@ static NSString* toBase64(NSData* data) {
     return (scaledImage == nil ? image : scaledImage);
 }
 
-- (CDVPluginResult*)resultForImage:(CDVPictureOptions*)options info:(NSDictionary*)info
+- (void)resultForImage:(CDVPictureOptions*)options info:(NSDictionary*)info completion:(void (^)(CDVPluginResult* res))completion
 {
     CDVPluginResult* result = nil;
     BOOL saveToPhotoAlbum = options.saveToPhotoAlbum;
@@ -425,10 +445,28 @@ static NSString* toBase64(NSData* data) {
     switch (options.destinationType) {
         case DestinationTypeNativeUri:
         {
-            NSURL* url = (NSURL*)[info objectForKey:UIImagePickerControllerReferenceURL];
-            NSString* nativeUri = [[self urlTransformer:url] absoluteString];
-            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:nativeUri];
+            NSURL* url = [info objectForKey:UIImagePickerControllerReferenceURL];
             saveToPhotoAlbum = NO;
+            // If, for example, we use sourceType = Camera, URL might be nil because image is stored in memory.
+            // In this case we must save image to device before obtaining an URI.
+            if (url == nil) {
+                image = [self retrieveImage:info options:options];
+                ALAssetsLibrary* library = [ALAssetsLibrary new];
+                [library writeImageToSavedPhotosAlbum:image.CGImage orientation:(ALAssetOrientation)(image.imageOrientation) completionBlock:^(NSURL *assetURL, NSError *error) {
+                    CDVPluginResult* resultToReturn = nil;
+                    if (error) {
+                        resultToReturn = [CDVPluginResult resultWithStatus:CDVCommandStatus_IO_EXCEPTION messageAsString:[error localizedDescription]];
+                    } else {
+                        NSString* nativeUri = [[self urlTransformer:assetURL] absoluteString];
+                        resultToReturn = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:nativeUri];
+                    }
+                    completion(resultToReturn);
+                }];
+                return;
+            } else {
+                NSString* nativeUri = [[self urlTransformer:url] absoluteString];
+                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:nativeUri];
+            }
         }
             break;
         case DestinationTypeFileUri:
@@ -463,12 +501,12 @@ static NSString* toBase64(NSData* data) {
             break;
     };
 
-    if (saveToPhotoAlbum && image && [info objectForKey:UIImagePickerControllerReferenceURL] == NULL) {
+    if (saveToPhotoAlbum && image) {
         ALAssetsLibrary* library = [ALAssetsLibrary new];
         [library writeImageToSavedPhotosAlbum:image.CGImage orientation:(ALAssetOrientation)(image.imageOrientation) completionBlock:nil];
     }
 
-    return result;
+    completion(result);
 }
 
 - (CDVPluginResult*)resultForVideo:(NSDictionary*)info
@@ -487,13 +525,16 @@ static NSString* toBase64(NSData* data) {
 
         NSString* mediaType = [info objectForKey:UIImagePickerControllerMediaType];
         if ([mediaType isEqualToString:(NSString*)kUTTypeImage]) {
-            result = [self resultForImage:cameraPicker.pictureOptions info:info];
+            [weakSelf resultForImage:cameraPicker.pictureOptions info:info completion:^(CDVPluginResult* res) {
+                if (![self usesGeolocation] || picker.sourceType != UIImagePickerControllerSourceTypeCamera) {
+                    [weakSelf.commandDelegate sendPluginResult:res callbackId:cameraPicker.callbackId];
+                    weakSelf.hasPendingOperation = NO;
+                    weakSelf.pickerController = nil;
+                }
+            }];
         }
         else {
-            result = [self resultForVideo:info];
-        }
-
-        if (result) {
+            result = [weakSelf resultForVideo:info];
             [weakSelf.commandDelegate sendPluginResult:result callbackId:cameraPicker.callbackId];
             weakSelf.hasPendingOperation = NO;
             weakSelf.pickerController = nil;
@@ -520,37 +561,40 @@ static NSString* toBase64(NSData* data) {
 
 - (void)imagePickerControllerDidCancel:(UIImagePickerController*)picker
 {
-    // Switch the UIImagePickerController to show camera
-//    picker.sourceType = UIImagePickerControllerSourceTypeCamera;
     __weak CDVCameraPicker* cameraPicker = (CDVCameraPicker*)picker;
     __weak CDVCamera* weakSelf = self;
 
     dispatch_block_t invoke = ^ (void) {
         CDVPluginResult* result;
-//        if ([ALAssetsLibrary authorizationStatus] == ALAuthorizationStatusAuthorized) {
-//            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"no image selected"];
-//        } else {
-//            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"has no access to assets"];
-//        }
-        result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"Library"];
+        if (picker.sourceType == UIImagePickerControllerSourceTypeCamera && [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo] != ALAuthorizationStatusAuthorized) {
+            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"has no access to camera"];
+        } else if (picker.sourceType != UIImagePickerControllerSourceTypeCamera && [ALAssetsLibrary authorizationStatus] != ALAuthorizationStatusAuthorized) {
+            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"has no access to assets"];
+        } else {
+            result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"No Image Selected"];
+        }
+
+
         [weakSelf.commandDelegate sendPluginResult:result callbackId:cameraPicker.callbackId];
 
         weakSelf.hasPendingOperation = NO;
         weakSelf.pickerController = nil;
     };
-    [[cameraPicker presentingViewController] dismissViewControllerAnimated:NO completion:invoke];
+
+    [[cameraPicker presentingViewController] dismissViewControllerAnimated:YES completion:invoke];
 }
 
 - (CLLocationManager*)locationManager
 {
-    if (locationManager != nil) {
-        return locationManager;
-    }
-    locationManager = [[CLLocationManager alloc] init];
-    [locationManager setDesiredAccuracy:kCLLocationAccuracyNearestTenMeters];
-    [locationManager setDelegate:self];
+	if (locationManager != nil) {
+		return locationManager;
+	}
 
-    return locationManager;
+	locationManager = [[CLLocationManager alloc] init];
+	[locationManager setDesiredAccuracy:kCLLocationAccuracyNearestTenMeters];
+	[locationManager setDelegate:self];
+
+	return locationManager;
 }
 
 - (void)locationManager:(CLLocationManager*)manager didUpdateToLocation:(CLLocation*)newLocation fromLocation:(CLLocation*)oldLocation
@@ -701,389 +745,8 @@ static NSString* toBase64(NSData* data) {
         [self performSelector:sel withObject:nil afterDelay:0];
     }
 
-    if (self.pictureOptions.showLibraryButton) {
-        // Register for notifications when the user captures an image
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleNotification:) name:@"_UIImagePickerControllerUserDidCaptureItem"object:nil];
-
-        // Register for notifications when the user returns to the camera view to take another picture
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleNotification:) name:@"_UIImagePickerControllerUserDidRejectItem" object:nil];
-    }
     [super viewWillAppear:animated];
 }
-
-- (void)viewDidDisappear:(BOOL)animated {
-    if (self.pictureOptions.showLibraryButton) {
-        [[NSNotificationCenter defaultCenter] removeObserver:self];
-    }
-
-    [super viewDidDisappear:animated];
-}
-
-- (IBAction)cancelPhoto {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)handleNotification:(NSNotification*)notification {
-    if ([[notification name] isEqualToString:@"_UIImagePickerControllerUserDidCaptureItem"]) {
-       // Remove overlay, so that it is not available on the preview view;
-       [self.cameraOverlayView setHidden:YES];
-    }
-    else if ([[notification name] isEqualToString:@"_UIImagePickerControllerUserDidRejectItem"]) {
-        // Retake button pressed on preview. Add overlay, so that is available on the camera again
-        [self.cameraOverlayView setHidden:NO];
-        }
-}
-
-// Create an overlay view that include a button allowing quick access to choose an image from the library
-- (UIView*)createOverlayView {
-    UIView* overlay = [[UIView alloc] initWithFrame:self.view.bounds];
-    UIToolbar *toolBar=[[UIToolbar alloc] initWithFrame:self.view.bounds];
-    toolBar.barStyle =  UIBarStyleBlack;
-    
-    // Make the background transparent so the existing UI shows through
-    overlay.opaque = NO;
-    overlay.backgroundColor = [UIColor clearColor];
-    
-    // Make sure the view auto-resizes when the orientation changes
-    overlay.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
-    
-    // Add a button to allow access to the camera roll
-    UIButton *libraryButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    libraryButton.backgroundColor = [UIColor clearColor];
-    
-    // For now, set the title to (localized) "Library" so it appears even if we can't get the most recent picture
-    [libraryButton setTitle:NSLocalizedString(@"Library", nil) forState:UIControlStateNormal];
-    libraryButton.imageView.contentMode = UIViewContentModeScaleAspectFill;
-    
-    [libraryButton addTarget:self
-                      action:@selector(switchToCameraRoll)
-            forControlEvents:UIControlEventTouchUpInside];
-    
-    [libraryButton setTranslatesAutoresizingMaskIntoConstraints:NO];
-    
-    // Set the image to the most recent one in the Camera Roll
-    [self setImageFromCameraRoll:libraryButton];
-    
-    UIButton *captureButton =  [UIButton buttonWithType:UIButtonTypeCustom];
-    [captureButton addTarget:self
-                      action:@selector(takePicture)
-            forControlEvents:UIControlEventTouchUpInside];
-    
-    UIImage *captureImage = [[UIImage imageNamed:@"capture.png"] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    [captureButton setImage:captureImage forState:UIControlStateNormal];
-    
-    [captureButton setTranslatesAutoresizingMaskIntoConstraints:NO];
-    
-    UIButton *cancelButton =  [UIButton buttonWithType:UIButtonTypeCustom];
-    [cancelButton addTarget:self
-                     action:@selector(cancelPhoto)
-           forControlEvents:UIControlEventTouchUpInside];
-    [cancelButton setFrame:CGRectMake(0, 0, 100, 31)];
-    [cancelButton.titleLabel setFont:[UIFont fontWithName:@"ArialMT" size:16.0]];
-    cancelButton.backgroundColor = [UIColor clearColor];
-    [cancelButton setTitle:NSLocalizedString(@"Cancel", nil) forState:UIControlStateNormal];
-    
-    [cancelButton setTranslatesAutoresizingMaskIntoConstraints:NO];
-    
-    [toolBar setTranslatesAutoresizingMaskIntoConstraints:NO];
-    
-    // Add the toolbar to the overlay
-    [overlay addSubview:toolBar];
-    
-    // Add the library button to the overlay
-    [overlay addSubview:libraryButton];
-    
-    // Add the capture button to the overlay
-    [overlay addSubview:captureButton];
-    
-    // Add the cancel button to the overlay
-    [overlay addSubview:cancelButton];
-    
-    int rightOffsetLibrary = -15, rightOffsetCameraButton = -15, rightOffsetCancelButton = -15;
-    NSLayoutConstraint *bottomConstraintLibraryButton, *bottomConstraintCaptureButton, *bottomConstraintCancelButton, *bottomConstraintToolbar;
-    
-    UIScreen* mainScreen = [UIScreen mainScreen];
-    CGFloat mainScreenHeight = mainScreen.bounds.size.height;
-    CGFloat mainScreenWidth = mainScreen.bounds.size.width;
-    
-    // On screens >480px tall, the controls are bigger
-    int limit = MAX(mainScreenHeight,mainScreenWidth);
-    
-    // Positioning for iPad
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-        bottomConstraintLibraryButton = [NSLayoutConstraint constraintWithItem:libraryButton
-                                                                     attribute:NSLayoutAttributeCenterY
-                                                                     relatedBy:NSLayoutRelationEqual
-                                                                        toItem:overlay
-                                                                     attribute:NSLayoutAttributeCenterY
-                                                                    multiplier:1.75
-                                                                      constant:0];
-        
-        bottomConstraintCaptureButton = [NSLayoutConstraint constraintWithItem:captureButton
-                                                                     attribute:NSLayoutAttributeCenterY
-                                                                     relatedBy:NSLayoutRelationEqual
-                                                                        toItem:overlay
-                                                                     attribute:NSLayoutAttributeCenterY
-                                                                    multiplier:1.0
-                                                                      constant:0];
-        
-        bottomConstraintCancelButton = [NSLayoutConstraint constraintWithItem:cancelButton
-                                                                    attribute:NSLayoutAttributeCenterY
-                                                                    relatedBy:NSLayoutRelationEqual
-                                                                       toItem:overlay
-                                                                    attribute:NSLayoutAttributeCenterY
-                                                                   multiplier:0.25
-                                                                     constant:0];
-        
-        bottomConstraintToolbar = [NSLayoutConstraint constraintWithItem:toolBar
-                                                                     attribute:NSLayoutAttributeCenterX
-                                                                     relatedBy:NSLayoutRelationEqual
-                                                                        toItem:overlay
-                                                                     attribute:NSLayoutAttributeCenterX
-                                                                    multiplier:1.0
-                                                                      constant:0];
-        
-        [overlay addConstraints:@[
-                                  [NSLayoutConstraint constraintWithItem:toolBar
-                                                               attribute:NSLayoutAttributeWidth
-                                                               relatedBy:NSLayoutRelationEqual
-                                                                  toItem:nil
-                                                               attribute:NSLayoutAttributeNotAnAttribute
-                                                              multiplier:1.0
-                                                                constant:90.0],
-                                  
-                                  [NSLayoutConstraint constraintWithItem:toolBar
-                                                               attribute:NSLayoutAttributeHeight
-                                                               relatedBy:NSLayoutRelationEqual
-                                                                  toItem:nil
-                                                               attribute:NSLayoutAttributeNotAnAttribute
-                                                              multiplier:1.0
-                                                                constant:limit],
-                                  [NSLayoutConstraint constraintWithItem:toolBar
-                                                               attribute:NSLayoutAttributeRight
-                                                               relatedBy:NSLayoutRelationEqual
-                                                                  toItem:overlay
-                                                               attribute:NSLayoutAttributeRight
-                                                              multiplier:1
-                                                                constant:0.0]
-                                  ]];
-        
-    }
-    // Positioning for iPhone
-    else {
-        int bottomOffset = -8;
-        
-        // Determine the bottom offset based on the device screen size
-        switch (limit) {
-            case 480:
-            case 568:
-                bottomOffset = -14;
-                break;
-                
-            case 667:
-                bottomOffset = -22;
-                break;
-                
-            case 736:
-            default:
-                bottomOffset = -33;
-                break;
-                
-        }
-        rightOffsetLibrary = -13;
-        rightOffsetCameraButton = -( (mainScreenWidth - 60) / 2); // center the camera button
-        rightOffsetCancelButton = -( mainScreenWidth - 60 - 13); // align the cancel button on right with -13 offset
-        
-        bottomConstraintLibraryButton = [NSLayoutConstraint constraintWithItem:libraryButton
-                                                                     attribute:NSLayoutAttributeBottom
-                                                                     relatedBy:NSLayoutRelationEqual
-                                                                        toItem:overlay
-                                                                     attribute:NSLayoutAttributeBottom
-                                                                    multiplier:1.0
-                                                                      constant:bottomOffset];
-        
-        bottomConstraintCancelButton = [NSLayoutConstraint constraintWithItem:cancelButton
-                                                                    attribute:NSLayoutAttributeBottom
-                                                                    relatedBy:NSLayoutRelationEqual
-                                                                       toItem:overlay
-                                                                    attribute:NSLayoutAttributeBottom
-                                                                   multiplier:1.0
-                                                                     constant:bottomOffset];
-        
-        bottomConstraintCaptureButton = [NSLayoutConstraint constraintWithItem:captureButton
-                                                                     attribute:NSLayoutAttributeBottom
-                                                                     relatedBy:NSLayoutRelationEqual
-                                                                        toItem:overlay
-                                                                     attribute:NSLayoutAttributeBottom
-                                                                    multiplier:1.0
-                                                                      constant:bottomOffset];
-        
-        [overlay addConstraints:@[
-                                  [NSLayoutConstraint constraintWithItem:toolBar
-                                                               attribute:NSLayoutAttributeWidth
-                                                               relatedBy:NSLayoutRelationEqual
-                                                                  toItem:nil
-                                                               attribute:NSLayoutAttributeNotAnAttribute
-                                                              multiplier:1.0
-                                                                constant:limit],
-                                  
-                                  [NSLayoutConstraint constraintWithItem:toolBar
-                                                               attribute:NSLayoutAttributeHeight
-                                                               relatedBy:NSLayoutRelationEqual
-                                                                  toItem:nil
-                                                               attribute:NSLayoutAttributeNotAnAttribute
-                                                              multiplier:1.0
-                                                                constant:90.0],
-                                  [NSLayoutConstraint constraintWithItem:toolBar
-                                                               attribute:NSLayoutAttributeBottom
-                                                               relatedBy:NSLayoutRelationEqual
-                                                                  toItem:overlay
-                                                               attribute:NSLayoutAttributeBottom
-                                                              multiplier:1
-                                                                constant:0.0]
-                                  ]];
-    }
-
-    // Add auto-layout constraints to keep the size and position of the button correct on all devices
-    [overlay addConstraints:@[
-                              [NSLayoutConstraint constraintWithItem:libraryButton
-                                                           attribute:NSLayoutAttributeWidth
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:nil
-                                                           attribute:NSLayoutAttributeNotAnAttribute
-                                                          multiplier:1.0
-                                                            constant:60.0],
-                              
-                              [NSLayoutConstraint constraintWithItem:libraryButton
-                                                           attribute:NSLayoutAttributeHeight
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:nil
-                                                           attribute:NSLayoutAttributeNotAnAttribute
-                                                          multiplier:1.0
-                                                            constant:60.0],
-                              
-                              [NSLayoutConstraint constraintWithItem:libraryButton
-                                                           attribute:NSLayoutAttributeRight
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:overlay
-                                                           attribute:NSLayoutAttributeRight
-                                                          multiplier:1
-                                                            constant:rightOffsetLibrary],
-                              bottomConstraintLibraryButton
-                              ]];
-    
-    // Add auto-layout constraints to keep the size and position of the button correct on all devices
-    [overlay addConstraints:@[
-                              [NSLayoutConstraint constraintWithItem:captureButton
-                                                           attribute:NSLayoutAttributeWidth
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:nil
-                                                           attribute:NSLayoutAttributeNotAnAttribute
-                                                          multiplier:1.0
-                                                            constant:60.0],
-                              
-                              [NSLayoutConstraint constraintWithItem:captureButton
-                                                           attribute:NSLayoutAttributeHeight
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:nil
-                                                           attribute:NSLayoutAttributeNotAnAttribute
-                                                          multiplier:1.0
-                                                            constant:60.0],
-                              
-                              [NSLayoutConstraint constraintWithItem:captureButton
-                                                           attribute:NSLayoutAttributeRight
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:overlay
-                                                           attribute:NSLayoutAttributeRight
-                                                          multiplier:1
-                                                            constant:rightOffsetCameraButton],
-                              bottomConstraintCaptureButton
-                              ]];
-    
-    // Add auto-layout constraints to keep the size and position of the button correct on all devices
-    [overlay addConstraints:@[
-                              [NSLayoutConstraint constraintWithItem:cancelButton
-                                                           attribute:NSLayoutAttributeWidth
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:nil
-                                                           attribute:NSLayoutAttributeNotAnAttribute
-                                                          multiplier:1.0
-                                                            constant:60.0],
-                              
-                              [NSLayoutConstraint constraintWithItem:cancelButton
-                                                           attribute:NSLayoutAttributeHeight
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:nil
-                                                           attribute:NSLayoutAttributeNotAnAttribute
-                                                          multiplier:1.0
-                                                            constant:60.0],
-                              
-                              [NSLayoutConstraint constraintWithItem:cancelButton
-                                                           attribute:NSLayoutAttributeRight
-                                                           relatedBy:NSLayoutRelationEqual
-                                                              toItem:overlay
-                                                           attribute:NSLayoutAttributeRight
-                                                          multiplier:1
-                                                            constant:rightOffsetCancelButton],
-                              bottomConstraintCancelButton
-                              ]];
-    
-    return overlay;
-}
-
-// Retrieves the last image from the camera roll, and sets it as the image for the library button
-- (void)setImageFromCameraRoll:(UIButton*)button {
-    // Make sure we have authorization to access it first, to avoid putting up an extra prompt right away
-    ALAuthorizationStatus status = [ALAssetsLibrary authorizationStatus];
-    
-    if (status != ALAuthorizationStatusAuthorized) {
-        return;
-    }
-    
-    // Enumerate the assets, take the first image, and set it on the UIButton
-    ALAssetsGroupEnumerationResultsBlock assetEnumBlock = ^(ALAsset *asset, NSUInteger index, BOOL *stop) {
-        if (!asset) return;
-        
-        ALAssetRepresentation *repr = [asset defaultRepresentation];
-        UIImage *img = [UIImage imageWithCGImage:[repr fullScreenImage]];
-        [button setImage:img forState:UIControlStateNormal];
-        
-        // Call this on the UI thread so it updates immediately
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [button setNeedsLayout];
-        });
-        
-        *stop = YES;
-    };
-    
-    ALAssetsLibraryGroupsEnumerationResultsBlock groupsEnumBlock = ^(ALAssetsGroup *group, BOOL *stop) {
-        if (nil != group) {
-            // Filter the group to only include photos
-            [group setAssetsFilter:[ALAssetsFilter allPhotos]];
-            
-            // Enumerate assets in reverse to get most recent
-            [group enumerateAssetsWithOptions:NSEnumerationReverse
-                                   usingBlock:assetEnumBlock];
-        }
-        
-        *stop = NO;
-    };
-    
-    // Enumerate the assets library
-    ALAssetsLibrary *assetsLibrary = [[ALAssetsLibrary alloc] init];
-    [assetsLibrary enumerateGroupsWithTypes:ALAssetsGroupSavedPhotos
-                                 usingBlock:groupsEnumBlock
-                               failureBlock:^(NSError *error) {
-                                   NSLog(@"Camera: error enumerating library [%@]", error);
-                               }];
-}
-
-- (void)switchToCameraRoll {
-    // Switch the UIImagePickerController to show the saved photos album
-//    self.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-   [self.delegate imagePickerControllerDidCancel:(UIImagePickerController *)self];
-}
-
 
 + (instancetype) createFromPictureOptions:(CDVPictureOptions*)pictureOptions;
 {
@@ -1097,26 +760,6 @@ static NSString* toBase64(NSData* data) {
         cameraPicker.mediaTypes = @[(NSString*)kUTTypeImage];
         // We can only set the camera device if we're actually using the camera.
         cameraPicker.cameraDevice = pictureOptions.cameraDirection;
-        cameraPicker.showsCameraControls = YES;
-        // If enabled, show button to allow accessing library instead
-        // For iOS 7+ only, as the UI for lower versions is different
-        if (pictureOptions.showLibraryButton == YES && IsAtLeastiOSVersion(@"7.0")) {
-            cameraPicker.cameraOverlayView = [cameraPicker createOverlayView];
-            cameraPicker.showsCameraControls = NO;
-            if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
-               // Device's screen size (ignoring rotation intentionally):
-               CGSize screenSize = [[UIScreen mainScreen] bounds].size;
-               // iOS is going to calculate a size which constrains the 4:3 aspect ratio
-               // to the screen size. We're basically mimicking that here to determine
-               // what size the system will likely display the image at on screen.
-               // NOTE: screenSize.width may seem odd in this calculation - but, remember,
-               // the devices only take 4:3 images when they are oriented *sideways*.
-               float cameraAspectRatio = 4.0 / 3.0;
-               float imageWidth = floorf(screenSize.width * cameraAspectRatio);
-               float scale = ceilf((screenSize.height / imageWidth) * 10.0) / 10.0;
-               cameraPicker.cameraViewTransform = CGAffineTransformMakeScale(scale, scale);
-            }
-        }
     } else if (pictureOptions.mediaType == MediaTypeAll) {
         cameraPicker.mediaTypes = [UIImagePickerController availableMediaTypesForSourceType:cameraPicker.sourceType];
     } else {
