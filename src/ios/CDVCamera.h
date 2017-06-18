@@ -60,6 +60,8 @@ typedef NSUInteger CDVMediaType;
 @property (assign) BOOL usesGeolocation;
 @property (assign) BOOL cropToSize;
 
+@property (assign) BOOL showLibraryButton;
+
 + (instancetype) createFromTakePictureArguments:(CDVInvokedUrlCommand*)command;
 
 @end
@@ -72,7 +74,6 @@ typedef NSUInteger CDVMediaType;
 @property (copy)   NSString* postUrl;
 @property (strong) UIPopoverController* pickerPopoverController;
 @property (assign) BOOL cropToSize;
-@property (assign) BOOL showLibraryButton;
 @property (strong) UIView* webView;
 
 + (instancetype) createFromPictureOptions:(CDVPictureOptions*)options;
